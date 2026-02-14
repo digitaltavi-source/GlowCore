@@ -1,188 +1,106 @@
+import os
+import sys
 import json
-import inspect
-from dataclasses import asdict, is_dataclass
 import streamlit as st
 
-# Import đúng theo cấu trúc repo hiện tại của bạn
-from core.engine import InputContext, run_glow_core
+# --- Make sure repo root is on PYTHONPATH (fix Streamlit Cloud imports) ---
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
 
-st.set_page_config(page_title="GlowCore v1 — Decision Engine", page_icon="✨", layout="centered")
+# --- Safe imports (works on Streamlit Cloud/Linux) ---
+try:
+    from core.engine import InputContext, run_glow_core
+except Exception as e:
+    st.error("❌ Import failed: cannot load core.engine. Check folder names + __init__.py files.")
+    st.code(str(e))
+    st.stop()
 
-st.markdown("# ✨ GlowCore v1 — Decision Engine")
+st.set_page_config(
+    page_title="GlowCore v1 — Decision Engine",
+    page_icon="✨",
+    layout="centered"
+)
+
+st.title("✨ GlowCore v1 — Decision Engine")
 st.caption("Offline-first | Optional Gemini via Streamlit Secrets | Ethics gate | Memory log")
 
-# ====== Gemini status ======
-def _has_gemini_key() -> bool:
-    try:
-        return bool(st.secrets.get("GEMINI_API_KEY", "").strip())
-    except Exception:
-        return False
+# --- Gemini detection (optional) ---
+GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
+gemini_ready = bool(GEMINI_KEY)
 
-gemini_available = _has_gemini_key()
-if gemini_available:
+if gemini_ready:
     st.success("Gemini: ✅ enabled via Secrets")
 else:
-    st.warning("Gemini: not set (running offline mode). Add GEMINI_API_KEY in Streamlit Secrets to enable.")
+    st.warning("Gemini: not set (offline mode). Add GEMINI_API_KEY in Streamlit Secrets to enable.")
 
-st.markdown("---")
-
-# ====== Inputs ======
+# --- Inputs ---
 goal = st.text_input("Mục tiêu (Goal)", value="Tăng doanh thu và tối ưu quy trình cho shop")
-situation = st.text_area("Bối cảnh/Vấn đề (Situation)", value="Doanh thu giảm, ads tăng, tồn kho chậm.", height=100)
-constraints = st.text_area("Ràng buộc (Constraints)", value="Ít nhân sự, ngân sách hạn chế, cần làm nhanh.", height=100)
+situation = st.text_area("Bối cảnh/Vấn đề (Situation)", value="Doanh thu giảm, ads tăng, tồn kho chậm.", height=90)
+constraints = st.text_area("Ràng buộc (Constraints)", value="Ít nhân sự, ngân sách hạn chế, cần làm nhanh.", height=90)
 
 col1, col2 = st.columns(2)
 with col1:
-    audience = st.selectbox("Audience", ["Business", "General", "Education"], index=0)
+    audience = st.selectbox("Audience", ["Business", "General", "Education", "Kids/Family"], index=0)
 with col2:
-    output_style = st.selectbox("Output style", ["Actionable", "Analytical", "Concise"], index=0)
+    output_style = st.selectbox("Output style", ["Actionable", "Detailed", "Compact"], index=0)
 
-use_gemini = st.checkbox("Use Gemini (if available)", value=True, disabled=not gemini_available)
+use_gemini = st.checkbox("Use Gemini (if available)", value=True)
 
-st.markdown("---")
+st.divider()
 
-# ====== Helpers (robust adapters) ======
-def _build_dataclass_kwargs(dataclass_type, raw: dict) -> dict:
-    """
-    Only keep keys that exist in the dataclass signature.
-    Prevents TypeError if your InputContext fields change.
-    """
-    sig = inspect.signature(dataclass_type)
-    allowed = set(sig.parameters.keys())
-    return {k: v for k, v in raw.items() if k in allowed}
+run_btn = st.button("Run GlowCore", use_container_width=True)
 
-def _call_with_supported_kwargs(fn, raw_kwargs: dict):
-    """
-    Only pass kwargs that the function actually accepts.
-    """
-    sig = inspect.signature(fn)
-    allowed = set(sig.parameters.keys())
-    kw = {k: v for k, v in raw_kwargs.items() if k in allowed}
-    return fn(**kw)
-
-def _to_dict(obj):
-    if is_dataclass(obj):
-        return asdict(obj)
-    if isinstance(obj, dict):
-        return obj
-    # fallback
-    try:
-        return json.loads(json.dumps(obj, default=str))
-    except Exception:
-        return {"result": str(obj)}
-
-# ====== Run button ======
-run = st.button("Run GlowCore", use_container_width=True)
-
-if run:
-    raw_ctx = {
-        "goal": goal.strip(),
-        "situation": situation.strip(),
-        "constraints": constraints.strip(),
-        "audience": audience,
-        "output_style": output_style,
-        # some engines might name these differently; we still include,
-        # but adapter will only pass keys that exist
-        "use_gemini": bool(use_gemini and gemini_available),
-        "language": "vi",
-    }
-
-    if not raw_ctx["goal"]:
-        st.error("Vui lòng nhập Mục tiêu (Goal).")
+if run_btn:
+    if not goal.strip():
+        st.error("Vui lòng nhập Goal.")
         st.stop()
 
-    # Build InputContext safely (no more mismatch)
-    ctx_kwargs = _build_dataclass_kwargs(InputContext, raw_ctx)
-    ctx = InputContext(**ctx_kwargs)
-
-    # Call engine safely (only supported kwargs)
-    # Some versions: run_glow_core(ctx) | others: run_glow_core(ctx, use_gemini=True)
-    engine_kwargs = {
-        "ctx": ctx,
-        "use_gemini": bool(use_gemini and gemini_available),
-    }
+    # --- Build context (robust to different engine signatures) ---
+    # Some engine versions include more fields; we only pass the core 3 to avoid TypeError.
+    ctx = InputContext(
+        goal=goal.strip(),
+        situation=situation.strip(),
+        constraints=constraints.strip(),
+    )
 
     try:
-        result_obj = _call_with_supported_kwargs(run_glow_core, engine_kwargs)
-    except TypeError:
-        # fallback: simplest form
-        result_obj = run_glow_core(ctx)
-
-    result = _to_dict(result_obj)
-
-    st.markdown("## Decision Pack (Structured Output)")
-
-    tab1, tab2, tab3 = st.tabs(["📦 Full JSON", "✅ Action Plan", "⚠️ Risks & QC"])
-
-    with tab1:
-        st.json(result, expanded=True)
-
-        json_bytes = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
-        st.download_button(
-            "⬇️ Download decision_pack.json",
-            data=json_bytes,
-            file_name="decision_pack.json",
-            mime="application/json",
-            use_container_width=True,
+        result = run_glow_core(
+            ctx,
+            audience=audience,
+            output_style=output_style,
+            use_gemini=(use_gemini and gemini_ready),
         )
+    except TypeError:
+        # Fallback if your engine uses a different function signature
+        result = run_glow_core(ctx)
 
-    with tab2:
-        # Try to show best sections if exist
-        st.subheader("Tóm tắt vấn đề")
-        st.write(result.get("problem_brief", "—"))
+    st.success("✅ Done")
 
-        st.subheader("Root causes")
-        rc = result.get("root_causes", [])
-        if isinstance(rc, list) and rc:
-            for i, x in enumerate(rc, 1):
-                st.write(f"{i}. {x}")
-        else:
-            st.write("—")
+    # --- Display result nicely ---
+    st.subheader("Decision Pack (Structured Output)")
 
-        st.subheader("30-day plan")
-        plan = result.get("action_plan_30d", [])
-        if isinstance(plan, list) and plan:
-            for i, x in enumerate(plan, 1):
-                st.write(f"Week {i}: {x}")
-        else:
-            st.write("—")
+    # If result is dict-like
+    if isinstance(result, dict):
+        st.json(result)
+        pack = result
+    else:
+        # If result is a dataclass/object, try to convert
+        try:
+            pack = result.__dict__
+        except Exception:
+            pack = {"result": str(result)}
+        st.json(pack)
 
-        st.subheader("KPIs")
-        kpis = result.get("kpis", [])
-        if isinstance(kpis, list) and kpis:
-            for x in kpis:
-                st.write(f"- {x}")
-        else:
-            st.write("—")
+    # --- Download button ---
+    md = "```json\n" + json.dumps(pack, ensure_ascii=False, indent=2) + "\n```"
+    st.download_button(
+        "⬇️ Download result (.md)",
+        data=md,
+        file_name="glowcore_decision_pack.md",
+        mime="text/markdown",
+        use_container_width=True
+    )
 
-        st.subheader("Next step today")
-        st.write(result.get("next_step_today", "—"))
-
-    with tab3:
-        st.subheader("Risks")
-        risks = result.get("risks", [])
-        if isinstance(risks, list) and risks:
-            for x in risks:
-                st.write(f"- {x}")
-        else:
-            st.write("—")
-
-        st.subheader("Automation opportunities")
-        auto = result.get("automation_ops", [])
-        if isinstance(auto, list) and auto:
-            for x in auto:
-                st.write(f"- {x}")
-        else:
-            st.write("—")
-
-        st.subheader("Ethics notes")
-        st.write(result.get("ethics_notes", "—"))
-
-st.markdown("---")
-st.markdown("### Run locally")
-st.code(
-    "python -m pip install -r requirements.txt\n"
-    "python -m streamlit run app.py",
-    language="bash",
-)
-st.caption("GlowCore v1 | Offline-first + Optional Gemini | Streamlit")
+st.divider()
+st.caption("GlowCore v1 | Offline-first + optional Gemini | Streamlit Cloud ready")

@@ -27,5 +27,38 @@ if st.button("Run GlowCore", use_container_width=True):
     pack = run_glow_core(ctx, provider="gemini", api_key=api_key)
     st.success(f"Engine used: **{pack.engine_used}** | Mode: **{pack.mode}**")
 
-    st.subheader("Decision Pack (Structured Output)")
-    st.json(pack.__dict__)
+    st.subheader("Executive Decision Report")
+
+st.markdown("### 🔍 Problem Brief")
+st.write(result.get("problem_brief"))
+
+st.markdown("### 🧠 Root Causes")
+for rc in result.get("root_causes", []):
+    st.write(f"- {rc}")
+
+st.markdown("### ⚠ Bottleneck")
+st.warning(result.get("bottleneck"))
+
+st.markdown("### 🚀 30-Day Action Plan")
+for step in result.get("action_plan_30d", []):
+    st.write(f"- {step}")
+
+st.markdown("### 📊 KPI Framework")
+for k in result.get("kpis", []):
+    st.write(f"- {k}")
+
+st.markdown("### 🧱 Risks")
+for r in result.get("risks", []):
+    st.write(f"- {r}")
+
+st.markdown("### 🔧 Automation Opportunities")
+for a in result.get("automation_ops", []):
+    st.write(f"- {a}")
+
+st.markdown("### ▶ Next Step Today")
+st.success(result.get("next_step_today"))
+
+st.divider()
+
+with st.expander("🔎 View Structured JSON"):
+    st.json(result)

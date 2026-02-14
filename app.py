@@ -12,7 +12,7 @@ if ROOT_DIR not in sys.path:
 
 # --- Safe imports (works on Streamlit Cloud/Linux) ---
 try:
-    from core.engine import InputContext, run_glow_core
+    from glowcore.engine import InputContext, run_glow_core
 except Exception as e:
     st.error("❌ Import failed: cannot load core.engine. Check folder names + __init__.py files.")
     st.code(str(e))

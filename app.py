@@ -1,5 +1,5 @@
 import streamlit as st
-from glowcore.core.engine import InputContext, run_glow_core
+from core.engine import InputContext, run_glow_core
 from glowcore.memory.memory_store import MemoryStore
 
 st.set_page_config(page_title="GlowCore v1", page_icon="✨", layout="centered")

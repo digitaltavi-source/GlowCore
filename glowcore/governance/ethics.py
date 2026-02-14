@@ -1,27 +1,16 @@
-from __future__ import annotations
-from typing import Dict, Any
-
-def ethics_gate(goal: str, situation: str) -> Dict[str, Any]:
+def ethics_gate(text: str) -> dict:
     """
-    Simple ethics gate: block illegal/explicitly harmful intents.
-    (Lightweight for demo; extend later.)
+    Very simple gate (offline). You can expand later.
+    Returns: {"ok": bool, "notes": list[str]}
     """
-    text = (goal + " " + situation).lower()
+    notes = []
+    t = (text or "").lower()
 
-    blocked_keywords = [
-        "lừa đảo", "scam", "hack", "đánh cắp", "trốn thuế", "rửa tiền",
-        "thuốc cấm", "ma tuý"
-    ]
+    # Example: block obviously illegal/unsafe intents (keep it simple)
+    blocked_keywords = ["hack", "lừa đảo", "scam", "rửa tiền", "ma túy", "vũ khí"]
+    if any(k in t for k in blocked_keywords):
+        notes.append("Potentially harmful/illegal intent detected. Please reframe the request.")
+        return {"ok": False, "notes": notes}
 
-    for kw in blocked_keywords:
-        if kw in text:
-            return {
-                "allowed": False,
-                "reason": f"Blocked by ethics gate keyword: {kw}",
-                "notes": ["Hệ thống chỉ hỗ trợ mục tiêu hợp pháp và tạo giá trị bền vững."],
-            }
-
-    return {
-        "allowed": True,
-        "notes": ["Ưu tiên giải pháp hợp pháp, minh bạch, không gây hại người dùng."],
-    }
+    notes.append("Ethics gate: OK.")
+    return {"ok": True, "notes": notes}

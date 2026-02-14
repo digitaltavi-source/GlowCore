@@ -1,247 +1,188 @@
-import os
+import json
+import inspect
+from dataclasses import asdict, is_dataclass
 import streamlit as st
 
-# =========================
-# 1) SAFE IMPORTS
-# =========================
-# Hỗ trợ cả 2 kiểu cấu trúc:
-# - from glowcore.core.engine import ...
-# - from core.engine import ...
-InputContext = None
-run_glow_core = None
+# Import đúng theo cấu trúc repo hiện tại của bạn
+from core.engine import InputContext, run_glow_core
 
-_import_errors = []
+st.set_page_config(page_title="GlowCore v1 — Decision Engine", page_icon="✨", layout="centered")
 
-try:
-    from glowcore.core.engine import InputContext, run_glow_core  # type: ignore
-except Exception as e:
-    _import_errors.append(f"glowcore.core.engine: {e}")
-    try:
-        from core.engine import InputContext, run_glow_core  # type: ignore
-    except Exception as e2:
-        _import_errors.append(f"core.engine: {e2}")
-
-# =========================
-# 2) PAGE CONFIG
-# =========================
-st.set_page_config(
-    page_title="GlowCore v1 — Decision Engine",
-    page_icon="✨",
-    layout="centered",
-)
-
-# =========================
-# 3) HEADER / STATUS
-# =========================
 st.markdown("# ✨ GlowCore v1 — Decision Engine")
 st.caption("Offline-first | Optional Gemini via Streamlit Secrets | Ethics gate | Memory log")
 
-# Gemini secrets check (Streamlit Cloud: Settings → Secrets)
-gemini_key = None
-try:
-    gemini_key = st.secrets.get("GEMINI_API_KEY", None)
-except Exception:
-    gemini_key = None
+# ====== Gemini status ======
+def _has_gemini_key() -> bool:
+    try:
+        return bool(st.secrets.get("GEMINI_API_KEY", "").strip())
+    except Exception:
+        return False
 
-if gemini_key:
+gemini_available = _has_gemini_key()
+if gemini_available:
     st.success("Gemini: ✅ enabled via Secrets")
 else:
-    st.warning("Gemini: not set (running offline mode). Add GEMINI_API_KEY in Streamlit Secrets to enable LLM mode.")
+    st.warning("Gemini: not set (running offline mode). Add GEMINI_API_KEY in Streamlit Secrets to enable.")
 
-# Nếu import fail thì báo rõ để bạn biết lỗi nằm ở import, không phải UI
-if InputContext is None or run_glow_core is None:
-    st.error("Không import được engine. Kiểm tra cấu trúc thư mục / __init__.py / đường dẫn import.")
-    st.code("\n".join(_import_errors))
-    st.stop()
+st.markdown("---")
 
-# =========================
-# 4) UTIL: SAFE GET + KEY MAP
-# =========================
-def pick(d: dict, *keys, default=None):
-    """Lấy giá trị theo nhiều tên key khác nhau (tự động fallback)."""
-    for k in keys:
-        if isinstance(d, dict) and k in d and d[k] not in (None, ""):
-            return d[k]
-    return default
+# ====== Inputs ======
+goal = st.text_input("Mục tiêu (Goal)", value="Tăng doanh thu và tối ưu quy trình cho shop")
+situation = st.text_area("Bối cảnh/Vấn đề (Situation)", value="Doanh thu giảm, ads tăng, tồn kho chậm.", height=100)
+constraints = st.text_area("Ràng buộc (Constraints)", value="Ít nhân sự, ngân sách hạn chế, cần làm nhanh.", height=100)
 
-def as_list(x):
-    if x is None:
-        return []
-    if isinstance(x, list):
-        return x
-    if isinstance(x, str):
-        # nếu là chuỗi dài có thể tách dòng
-        lines = [s.strip("-• \t") for s in x.splitlines() if s.strip()]
-        return lines if lines else [x]
-    return [x]
+col1, col2 = st.columns(2)
+with col1:
+    audience = st.selectbox("Audience", ["Business", "General", "Education"], index=0)
+with col2:
+    output_style = st.selectbox("Output style", ["Actionable", "Analytical", "Concise"], index=0)
 
-def render_bullets(items):
-    for it in as_list(items):
-        st.write(f"- {it}")
+use_gemini = st.checkbox("Use Gemini (if available)", value=True, disabled=not gemini_available)
 
-def normalize_result(raw: dict) -> dict:
-    """Chuẩn hoá output để UI luôn render được."""
-    if not isinstance(raw, dict):
-        return {"raw": raw}
+st.markdown("---")
 
-    return {
-        "engine_used": pick(raw, "engine_used", "engine", default="offline"),
-        "mode": pick(raw, "mode", "route", "detected_mode", default="General"),
-        "problem_brief": pick(raw, "problem_brief", "brief", "summary", "problem", default=""),
-        "root_causes": as_list(pick(raw, "root_causes", "causes", "rootcause", default=[])),
-        "context_factors": as_list(pick(raw, "context_factors", "context", "factors", default=[])),
-        "bottleneck": pick(raw, "bottleneck", "constraint", "key_bottleneck", default=""),
-        "action_plan_30d": as_list(pick(raw, "action_plan_30d", "plan_30d", "plan", "action_plan", default=[])),
-        "kpis": as_list(pick(raw, "kpis", "metrics", "success_metrics", default=[])),
-        "risks": as_list(pick(raw, "risks", "risk", "risk_notes", default=[])),
-        "automation_ops": as_list(pick(raw, "automation_ops", "automation", "automation_opportunities", default=[])),
-        "next_step_today": pick(raw, "next_step_today", "next_step", "today", default=""),
-        "ethics_notes": as_list(pick(raw, "ethics_notes", "ethics", "compliance", default=[])),
-        "_raw": raw,
+# ====== Helpers (robust adapters) ======
+def _build_dataclass_kwargs(dataclass_type, raw: dict) -> dict:
+    """
+    Only keep keys that exist in the dataclass signature.
+    Prevents TypeError if your InputContext fields change.
+    """
+    sig = inspect.signature(dataclass_type)
+    allowed = set(sig.parameters.keys())
+    return {k: v for k, v in raw.items() if k in allowed}
+
+def _call_with_supported_kwargs(fn, raw_kwargs: dict):
+    """
+    Only pass kwargs that the function actually accepts.
+    """
+    sig = inspect.signature(fn)
+    allowed = set(sig.parameters.keys())
+    kw = {k: v for k, v in raw_kwargs.items() if k in allowed}
+    return fn(**kw)
+
+def _to_dict(obj):
+    if is_dataclass(obj):
+        return asdict(obj)
+    if isinstance(obj, dict):
+        return obj
+    # fallback
+    try:
+        return json.loads(json.dumps(obj, default=str))
+    except Exception:
+        return {"result": str(obj)}
+
+# ====== Run button ======
+run = st.button("Run GlowCore", use_container_width=True)
+
+if run:
+    raw_ctx = {
+        "goal": goal.strip(),
+        "situation": situation.strip(),
+        "constraints": constraints.strip(),
+        "audience": audience,
+        "output_style": output_style,
+        # some engines might name these differently; we still include,
+        # but adapter will only pass keys that exist
+        "use_gemini": bool(use_gemini and gemini_available),
+        "language": "vi",
     }
 
-# =========================
-# 5) INPUT UI
-# =========================
-st.markdown("### Input")
-
-goal = st.text_input("Mục tiêu (Goal)", value="Tăng doanh thu và tối ưu quy trình cho shop")
-situation = st.text_area("Bối cảnh/Vấn đề (Situation)", value="Doanh thu giảm, ads tăng, tồn kho chậm.", height=110)
-constraints = st.text_area("Ràng buộc (Constraints)", value="Ít nhân sự, ngân sách hạn chế, cần làm nhanh.", height=110)
-
-colA, colB = st.columns(2)
-with colA:
-    audience = st.selectbox("Audience", ["Business", "General", "Education"], index=0)
-with colB:
-    output_style = st.selectbox("Output style", ["Actionable", "Strategic", "Compact"], index=0)
-
-use_llm = st.checkbox(
-    "Use Gemini (if available)",
-    value=bool(gemini_key),
-    help="Nếu có GEMINI_API_KEY trong Secrets thì bật được. Nếu không có thì tự chạy offline."
-)
-
-st.divider()
-
-# =========================
-# 6) RUN
-# =========================
-if st.button("Run GlowCore", use_container_width=True):
-    if not goal.strip():
+    if not raw_ctx["goal"]:
         st.error("Vui lòng nhập Mục tiêu (Goal).")
         st.stop()
 
-    # InputContext: tuỳ code engine của bạn.
-    # Mình truyền các trường phổ biến nhất — nếu engine bạn đặt tên khác,
-    # phần run_glow_core vẫn có thể xử lý qua **kwargs hoặc dataclass fields.
+    # Build InputContext safely (no more mismatch)
+    ctx_kwargs = _build_dataclass_kwargs(InputContext, raw_ctx)
+    ctx = InputContext(**ctx_kwargs)
+
+    # Call engine safely (only supported kwargs)
+    # Some versions: run_glow_core(ctx) | others: run_glow_core(ctx, use_gemini=True)
+    engine_kwargs = {
+        "ctx": ctx,
+        "use_gemini": bool(use_gemini and gemini_available),
+    }
+
     try:
-        ctx = InputContext(
-            goal=goal.strip(),
-            situation=situation.strip(),
-            constraints=constraints.strip(),
-            audience=audience,
-            output_style=output_style,
-        )
+        result_obj = _call_with_supported_kwargs(run_glow_core, engine_kwargs)
     except TypeError:
-        # fallback nếu InputContext ít field hơn
-        ctx = InputContext(
-            goal=goal.strip(),
-            situation=situation.strip(),
-            constraints=constraints.strip(),
+        # fallback: simplest form
+        result_obj = run_glow_core(ctx)
+
+    result = _to_dict(result_obj)
+
+    st.markdown("## Decision Pack (Structured Output)")
+
+    tab1, tab2, tab3 = st.tabs(["📦 Full JSON", "✅ Action Plan", "⚠️ Risks & QC"])
+
+    with tab1:
+        st.json(result, expanded=True)
+
+        json_bytes = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
+        st.download_button(
+            "⬇️ Download decision_pack.json",
+            data=json_bytes,
+            file_name="decision_pack.json",
+            mime="application/json",
+            use_container_width=True,
         )
 
-    # Run
-    try:
-        # engine có thể nhận tham số use_llm / api_key, tuỳ bạn.
-        # Ta gọi theo cách an toàn: thử gọi có use_llm, nếu fail thì gọi tối giản.
-        try:
-            raw = run_glow_core(ctx, use_llm=use_llm)  # type: ignore
-        except TypeError:
-            raw = run_glow_core(ctx)  # type: ignore
-    except Exception as e:
-        st.error("Engine lỗi khi chạy.")
-        st.exception(e)
-        st.stop()
+    with tab2:
+        # Try to show best sections if exist
+        st.subheader("Tóm tắt vấn đề")
+        st.write(result.get("problem_brief", "—"))
 
-    res = normalize_result(raw)
+        st.subheader("Root causes")
+        rc = result.get("root_causes", [])
+        if isinstance(rc, list) and rc:
+            for i, x in enumerate(rc, 1):
+                st.write(f"{i}. {x}")
+        else:
+            st.write("—")
 
-    st.success(f"Engine used: **{res['engine_used']}** | Mode: **{res['mode']}**")
+        st.subheader("30-day plan")
+        plan = result.get("action_plan_30d", [])
+        if isinstance(plan, list) and plan:
+            for i, x in enumerate(plan, 1):
+                st.write(f"Week {i}: {x}")
+        else:
+            st.write("—")
 
-    # =========================
-    # 7) EXECUTIVE REPORT VIEW
-    # =========================
-    st.markdown("## Decision Report")
+        st.subheader("KPIs")
+        kpis = result.get("kpis", [])
+        if isinstance(kpis, list) and kpis:
+            for x in kpis:
+                st.write(f"- {x}")
+        else:
+            st.write("—")
 
-    st.markdown("### 🔍 Problem Brief")
-    if res["problem_brief"]:
-        st.write(res["problem_brief"])
-    else:
-        st.write("—")
+        st.subheader("Next step today")
+        st.write(result.get("next_step_today", "—"))
 
-    st.markdown("### 🧠 Root Causes")
-    if res["root_causes"]:
-        render_bullets(res["root_causes"])
-    else:
-        st.write("—")
+    with tab3:
+        st.subheader("Risks")
+        risks = result.get("risks", [])
+        if isinstance(risks, list) and risks:
+            for x in risks:
+                st.write(f"- {x}")
+        else:
+            st.write("—")
 
-    st.markdown("### 🧭 Context Factors")
-    if res["context_factors"]:
-        render_bullets(res["context_factors"])
-    else:
-        st.write("—")
+        st.subheader("Automation opportunities")
+        auto = result.get("automation_ops", [])
+        if isinstance(auto, list) and auto:
+            for x in auto:
+                st.write(f"- {x}")
+        else:
+            st.write("—")
 
-    st.markdown("### ⚠ Bottleneck")
-    if res["bottleneck"]:
-        st.warning(res["bottleneck"])
-    else:
-        st.write("—")
+        st.subheader("Ethics notes")
+        st.write(result.get("ethics_notes", "—"))
 
-    st.markdown("### 🚀 30-Day Action Plan")
-    if res["action_plan_30d"]:
-        render_bullets(res["action_plan_30d"])
-    else:
-        st.write("—")
-
-    st.markdown("### 📊 KPI Framework")
-    if res["kpis"]:
-        render_bullets(res["kpis"])
-    else:
-        st.write("—")
-
-    st.markdown("### 🧱 Risks")
-    if res["risks"]:
-        render_bullets(res["risks"])
-    else:
-        st.write("—")
-
-    st.markdown("### 🔧 Automation Opportunities")
-    if res["automation_ops"]:
-        render_bullets(res["automation_ops"])
-    else:
-        st.write("—")
-
-    st.markdown("### ▶ Next Step Today")
-    if res["next_step_today"]:
-        st.success(res["next_step_today"])
-    else:
-        st.write("—")
-
-    st.markdown("### ✅ Ethics Notes")
-    if res["ethics_notes"]:
-        render_bullets(res["ethics_notes"])
-    else:
-        st.write("—")
-
-    st.divider()
-
-    # =========================
-    # 8) JSON (TECH VIEW)
-    # =========================
-    with st.expander("🔎 View Structured JSON"):
-        st.json(res["_raw"])
-
-# =========================
-# 9) FOOTER
-# =========================
 st.markdown("---")
-st.caption("GlowCore v1 | Decision Intelligence Demo | Streamlit App")
+st.markdown("### Run locally")
+st.code(
+    "python -m pip install -r requirements.txt\n"
+    "python -m streamlit run app.py",
+    language="bash",
+)
+st.caption("GlowCore v1 | Offline-first + Optional Gemini | Streamlit")

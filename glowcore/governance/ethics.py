@@ -1,9 +1,13 @@
+from __future__ import annotations
 from typing import Tuple
 
-def ethics_gate(goal: str, situation: str) -> Tuple[bool, str]:
-    # Minimal, safe, non-judgmental gate
-    text = f"{goal} {situation}".lower()
-    banned = ["hack", "weapon", "fraud", "scam"]
-    if any(x in text for x in banned):
-        return False, "Request may involve unsafe/illegal intent. Please reframe to ethical, legal use."
+BANNED = [
+    "hack", "malware", "steal", "đánh bom", "bom", "weapon", "drugs", "ma túy"
+]
+
+def ethics_gate(text: str) -> Tuple[bool, str]:
+    t = (text or "").lower()
+    for w in BANNED:
+        if w in t:
+            return False, f"Blocked by ethics gate (keyword: {w})."
     return True, "OK"
